@@ -35,7 +35,7 @@ class FakeResponse:
 
 
 class FakeOpener:
-    """Queues responses; records every Request passed to open()."""
+    """Queues responses (or Exception instances to raise); records requests."""
 
     def __init__(self, responses=None, error=None):
         self.responses = list(responses or [])
@@ -48,7 +48,10 @@ class FakeOpener:
             raise self.error
         if not self.responses:
             raise AssertionError("FakeOpener: no response queued")
-        return self.responses.pop(0)
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def json_response(status, payload, headers=None):
