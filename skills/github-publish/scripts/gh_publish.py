@@ -429,17 +429,15 @@ def prepare_local_repo(
     return True
 
 
-def remote_is_empty(run, repo_url: str, token: str, owner: str, ca_pem: str) -> bool:
-    ca = write_ca_tempfile(ca_pem)
+def remote_is_empty(run, repo_url: str, token: str, owner: str, ca_path: str) -> bool:
+    """ls-remote --heads; True when the remote has no branches.
+
+    Uses the caller's CA file (ca_path) — it must NOT create or delete one:
+    an identically-named temp file here would race with push_main's own.
+    """
     basic = base64.b64encode(f"{owner}:{token}".encode()).decode()
-    try:
-        r = run(["git", *_git_secure_args(str(ca), basic), "ls-remote", "--heads", repo_url])
-        return r.returncode == 0 and not r.stdout.strip()
-    finally:
-        try:
-            ca.unlink()
-        except OSError:
-            pass
+    r = run(["git", *_git_secure_args(ca_path, basic), "ls-remote", "--heads", repo_url])
+    return r.returncode == 0 and not r.stdout.strip()
 
 
 def push_main(
@@ -462,7 +460,7 @@ def push_main(
     basic = base64.b64encode(f"{owner}:{token}".encode()).decode()
     secure = _git_secure_args(str(ca), basic)
     try:
-        if not remote_is_empty(run, repo_url, token, owner, ca_pem):
+        if not remote_is_empty(run, repo_url, token, owner, str(ca)):
             r = run(
                 [
                     "git",

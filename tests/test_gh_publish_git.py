@@ -105,12 +105,16 @@ class GitStageTests(unittest.TestCase):
         self.assertEqual((Path(td) / ".gitignore").read_text(encoding="utf-8"), "custom-ignore-entry\n")
 
     def test_remote_is_empty(self):
+        td = make_tempdir()
+        ca = Path(td) / "ca.pem"
+        ca.write_text("PEM", encoding="utf-8")
         run = GitRun()
         run.when("ls-remote", stdout="")
-        self.assertTrue(gh_publish.remote_is_empty(run, "https://github.com/o/r.git", "ghp_x", "o", "PEM"))
+        self.assertTrue(gh_publish.remote_is_empty(run, "https://github.com/o/r.git", "ghp_x", "o", str(ca)))
         run2 = GitRun()
         run2.when("ls-remote", stdout="abc\trefs/heads/main")
-        self.assertFalse(gh_publish.remote_is_empty(run2, "https://github.com/o/r.git", "ghp_x", "o", "PEM"))
+        self.assertFalse(gh_publish.remote_is_empty(run2, "https://github.com/o/r.git", "ghp_x", "o", str(ca)))
+        self.assertTrue(ca.exists())  # remote_is_empty must NOT delete the CA file
 
     def test_push_cmd_contains_security_flags(self):
         td = make_tempdir()
