@@ -1,28 +1,18 @@
 """Tests for github-publish/scripts/gh_config.py"""
-import os
 import shutil
 import sys
 import unittest
-import uuid
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "skills" / "github-publish" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gh_config  # noqa: E402
+from _helpers import make_tempdir  # noqa: E402
 
-# The DSH sandbox denies writes under %LOCALAPPDATA%\Temp to child processes,
-# so tests use a temp dir outside the repo instead of tempfile defaults.
-# tempfile.mkdtemp() is also avoided: os.mkdir(0o700) sets a restrictive DACL
-# on Windows that the sandbox then blocks writes through; plain mkdir() works.
+# Temp dirs live outside the repo (see _helpers.py for the sandbox story).
 WORKSPACE_TMP = Path(__file__).resolve().parents[2] / ".tmp-github-publisher-tests"
-
-
-def make_tempdir():
-    WORKSPACE_TMP.mkdir(parents=True, exist_ok=True)
-    d = WORKSPACE_TMP / f"td-{os.getpid()}-{uuid.uuid4().hex[:8]}"
-    d.mkdir()
-    return str(d)
 
 
 class ConfigTests(unittest.TestCase):
