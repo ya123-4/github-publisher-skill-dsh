@@ -123,6 +123,47 @@ class CheckTests(unittest.TestCase):
         self.assertTrue(payload["token_ok"])
         self.assertNotIn("ghp_x", buf.getvalue())
 
+    def test_probe_tls_handshake_only(self):
+        class FakeConn:
+            def __init__(self):
+                self.closed = False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.closed = True
+                return False
+
+        conn = FakeConn()
+        wrapped = []
+
+        def fake_wrap(sock):
+            wrapped.append(sock)
+            return sock
+
+        ok, msg = gh_check.probe_tls(
+            connect=lambda: conn, wrap=fake_wrap
+        )
+        self.assertTrue(ok, msg)
+        self.assertTrue(wrapped)
+        self.assertTrue(conn.closed)
+
+    def test_probe_tls_handshake_failure(self):
+        def boom(sock):
+            raise ssl.SSLError("handshake failed")
+
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        ok, msg = gh_check.probe_tls(connect=lambda: FakeConn(), wrap=boom)
+        self.assertFalse(ok)
+        self.assertIn("handshake failed", msg)
+
 
 if __name__ == "__main__":
     unittest.main()

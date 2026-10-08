@@ -44,13 +44,19 @@ def validate_token(token: str, owner: str, opener=None) -> tuple:
     return (False, f"HTTP {status}")
 
 
-def probe_tls(host: str = "github.com", port: int = 443) -> tuple:
-    """(ok, message): real TLS handshake through the system trust store."""
+def probe_tls(host: str = "github.com", port: int = 443, connect=None, wrap=None) -> tuple:
+    """(ok, message): TLS handshake through the system trust store.
+
+    Handshake only — never recv(): GitHub sends nothing after the handshake,
+    so reading would block until timeout and false-negative.
+    """
+    ctx = ssl.create_default_context()
+    conn = connect or (lambda: socket.create_connection((host, port), timeout=10))
+    wrapper = wrap or (lambda s: ctx.wrap_socket(s, server_hostname=host))
     try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=10) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as s:
-                s.recv(1)
+        with conn() as sock:
+            with wrapper(sock):
+                pass
         return (True, f"TLS ok: {host}:{port}")
     except Exception as exc:
         return (False, f"TLS 失败：{exc}")

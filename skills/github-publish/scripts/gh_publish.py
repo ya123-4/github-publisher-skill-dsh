@@ -392,9 +392,10 @@ def prepare_local_repo(
         r = run(["git", "init", "-b", "main", str(dir)])
         if r.returncode != 0:
             raise RuntimeError(f"git init 失败：{r.stderr}")
-    (dir / "README.md").write_text(readme_en, encoding="utf-8")
-    (dir / "README.zh.md").write_text(readme_zh, encoding="utf-8")
-    (dir / "LICENSE").write_text(license_text, encoding="utf-8")
+    # Templates only fill gaps — never overwrite existing content.
+    (dir / "README.md").write_text(readme_en, encoding="utf-8") if not (dir / "README.md").exists() else None
+    (dir / "README.zh.md").write_text(readme_zh, encoding="utf-8") if not (dir / "README.zh.md").exists() else None
+    (dir / "LICENSE").write_text(license_text, encoding="utf-8") if not (dir / "LICENSE").exists() else None
     gi = dir / ".gitignore"
     if not gi.exists():
         gi.write_text(GITIGNORE_TEMPLATE, encoding="utf-8")

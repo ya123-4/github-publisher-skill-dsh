@@ -84,6 +84,26 @@ class GitStageTests(unittest.TestCase):
         r = real_git(["show", "HEAD:README.zh.md"], td)
         self.assertIn("自动入库插件", r.stdout)
 
+    def test_prepare_local_repo_keeps_existing_files(self):
+        td = make_tempdir()
+        pkg = {"name": "foo-dsh", "version": "0.1.0", "description": "自动入库插件"}
+        (Path(td) / "README.md").write_text("# Custom readme\n\nhand-written\n", encoding="utf-8")
+        (Path(td) / "README.zh.md").write_text("# 自定义说明\n", encoding="utf-8")
+        (Path(td) / "LICENSE").write_text("Custom license\n", encoding="utf-8")
+        (Path(td) / ".gitignore").write_text("custom-ignore-entry\n", encoding="utf-8")
+        gh_publish.prepare_local_repo(
+            Path(td),
+            {"name": "DSH Maintainers", "email": "dsh-maintainers@users.noreply.github.com"},
+            readme_en="# TEMPLATE\n",
+            readme_zh="# 模板\n",
+            license_text="TEMPLATE LICENSE",
+            pkg=pkg,
+        )
+        self.assertEqual((Path(td) / "README.md").read_text(encoding="utf-8"), "# Custom readme\n\nhand-written\n")
+        self.assertEqual((Path(td) / "README.zh.md").read_text(encoding="utf-8"), "# 自定义说明\n")
+        self.assertEqual((Path(td) / "LICENSE").read_text(encoding="utf-8"), "Custom license\n")
+        self.assertEqual((Path(td) / ".gitignore").read_text(encoding="utf-8"), "custom-ignore-entry\n")
+
     def test_remote_is_empty(self):
         run = GitRun()
         run.when("ls-remote", stdout="")
