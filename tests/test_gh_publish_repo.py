@@ -54,6 +54,35 @@ class RepoTests(unittest.TestCase):
         self.assertEqual(result["status"], "exists")
         self.assertIn("https://github.com/ya123-4/foo-dsh", result["html_url"])
 
+    def test_create_422_via_real_urllib_httperror(self):
+        # Real urllib raises HTTPError for 4xx; the fake response above hides
+        # that semantic difference. This test pins the real behavior.
+        fp = io.BytesIO(
+            json.dumps({"errors": [{"message": "name already exists on this account"}]}).encode()
+        )
+        err = urllib.error.HTTPError(
+            "https://api.github.com/user/repos", 422, "Unprocessable Entity", {}, fp
+        )
+        opener = FakeOpener([err])
+        result = gh_publish.create_repo_if_missing(
+            opener, "ghp_x", "ya123-4", "foo-dsh", "desc", False, sleep_s=0
+        )
+        self.assertEqual(result["status"], "exists")
+
+    def test_create_500_via_real_urllib_httperror_retries(self):
+        fp = io.BytesIO(b'{"message": "boom"}')
+        err500 = urllib.error.HTTPError(
+            "https://api.github.com/user/repos", 500, "Server Error", {}, fp
+        )
+        opener = FakeOpener(
+            [err500, json_response(201, {"html_url": "https://github.com/ya123-4/foo-dsh"})]
+        )
+        result = gh_publish.create_repo_if_missing(
+            opener, "ghp_x", "ya123-4", "foo-dsh", "desc", False, retries=1, sleep_s=0
+        )
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(len(opener.requests), 2)
+
     def test_create_403_permission(self):
         opener = FakeOpener([json_response(403, {"message": "Resource not accessible"})])
         result = gh_publish.create_repo_if_missing(

@@ -8,6 +8,7 @@ import json
 import shutil
 import socket
 import ssl
+import urllib.error
 from urllib.request import Request, build_opener
 
 import gh_config
@@ -32,6 +33,13 @@ def validate_token(token: str, owner: str, opener=None) -> tuple:
         with op.open(req, timeout=15) as resp:
             status = resp.status
             body = resp.read()
+    except urllib.error.HTTPError as exc:
+        # real urllib raises HTTPError for 4xx/5xx instead of a response
+        status = exc.code
+        try:
+            body = exc.read()
+        except Exception:
+            body = b""
     except Exception as exc:  # URLError, timeout, TLS failures
         return (False, f"网络错误：{gh_config.mask_token(str(exc), token)}")
     if status == 200:

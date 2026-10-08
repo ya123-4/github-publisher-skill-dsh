@@ -67,6 +67,21 @@ def emit_result(ok: bool, stage: str, message: str, hint: str = "", token: str |
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _open_status(op, req, timeout=15):
+    """open() that normalizes real urllib semantics: 4xx/5xx raise HTTPError
+    instead of returning a response, so turn it back into (status, body).
+    URLError and friends still propagate for callers that retry."""
+    try:
+        with op.open(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read()
+        except Exception:
+            body = b""
+        return exc.code, body
+
+
 def create_repo_if_missing(
     opener, token: str, owner: str, name: str, description: str, private: bool,
     retries: int = 2, sleep_s: float = 2.0,
@@ -91,9 +106,7 @@ def create_repo_if_missing(
             time.sleep(sleep_s)
         try:
             req = Request(url, data=data, headers=headers, method="POST")
-            with op.open(req, timeout=15) as resp:
-                status = resp.status
-                body = resp.read()
+            status, body = _open_status(op, req)
         except Exception as exc:
             last_err = gh_config.mask_token(str(exc), token)
             continue
@@ -182,8 +195,7 @@ def create_release(opener, token: str, owner: str, repo: str, tag: str, body: st
     op = opener or build_opener()
     try:
         req = Request(url, data=data, headers=_api_headers(token, "application/json"), method="POST")
-        with op.open(req, timeout=15) as resp:
-            status, resp_body = resp.status, resp.read()
+        status, resp_body = _open_status(op, req)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     text = resp_body.decode("utf-8", "replace")
@@ -209,8 +221,7 @@ def _list_release_assets(opener, token: str, owner: str, repo: str, release_id: 
     url = f"{API}/repos/{owner}/{repo}/releases/{release_id}/assets"
     try:
         req = Request(url, headers=_api_headers(token))
-        with opener.open(req, timeout=15) as resp:
-            status, resp_body = resp.status, resp.read()
+        status, resp_body = _open_status(opener, req)
     except Exception as exc:
         return [{"__error": gh_config.mask_token(str(exc), token)}]
     if status != 200:
@@ -232,8 +243,7 @@ def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz
     try:
         data = p.read_bytes()
         req = Request(url, data=data, headers=_api_headers(token, "application/octet-stream"), method="POST")
-        with op.open(req, timeout=120) as resp:
-            status, resp_body = resp.status, resp.read()
+        status, resp_body = _open_status(op, req, timeout=120)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     text = resp_body.decode("utf-8", "replace")
@@ -270,8 +280,7 @@ def verify_release(opener, token: str, owner: str, repo: str, tag: str) -> dict:
     op = opener or build_opener()
     try:
         req = Request(url, headers=_api_headers(token))
-        with op.open(req, timeout=15) as resp:
-            status, resp_body = resp.status, resp.read()
+        status, resp_body = _open_status(op, req)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     if status != 200:

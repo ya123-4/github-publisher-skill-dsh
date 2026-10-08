@@ -34,6 +34,19 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("401", msg)
 
+    def test_validate_token_401_via_real_urllib_httperror(self):
+        import io
+        import urllib.error
+
+        fp = io.BytesIO(b'{"message": "Bad credentials"}')
+        err = urllib.error.HTTPError(
+            "https://api.github.com/user", 401, "Unauthorized", {}, fp
+        )
+        opener = FakeOpener([err])
+        ok, msg = gh_check.validate_token("ghp_x", "ya123-4", opener=opener)
+        self.assertFalse(ok)
+        self.assertIn("401", msg)
+
     def test_check_environment_with_fake_opener(self):
         td = make_tempdir()
         cfg = Path(td) / "config.json"
