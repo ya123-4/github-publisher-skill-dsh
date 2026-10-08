@@ -18,20 +18,20 @@ LICENSE_TEXT = "MIT License (test)"
 
 
 class GitRun:
-    """Fake run_git_capture: records argv; per-call stdout/returncode handlers."""
+    """Fake run_git_capture: records argv; per-call stdout/returncode/stderr."""
 
     def __init__(self):
         self.calls = []
         self.handlers = {}
 
-    def when(self, needle, stdout="", returncode=0):
-        self.handlers[needle] = (stdout, returncode)
+    def when(self, needle, stdout="", returncode=0, stderr=""):
+        self.handlers[needle] = (stdout, returncode, stderr)
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
-        for needle, (stdout, returncode) in self.handlers.items():
+        for needle, (stdout, returncode, stderr) in self.handlers.items():
             if any(needle in a for a in argv):
-                return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+                return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -119,7 +119,7 @@ class GitStageTests(unittest.TestCase):
     def test_push_cmd_contains_security_flags(self):
         td = make_tempdir()
         run = GitRun()
-        code = gh_publish.push_main(
+        code, detail = gh_publish.push_main(
             Path(td),
             "https://github.com/ya123-4/foo-dsh.git",
             token="ghp_x",
@@ -129,6 +129,7 @@ class GitStageTests(unittest.TestCase):
             ca_base_dir=Path(td),
         )
         self.assertEqual(code, 0)
+        self.assertEqual(detail, "")
         flat = [a for call in run.calls for a in call]
         self.assertIn("http.sslBackend=openssl", flat)
         self.assertTrue(any(a.startswith("http.sslCAInfo=") for a in flat))
@@ -140,11 +141,46 @@ class GitStageTests(unittest.TestCase):
         self.assertTrue(any("push" in a for a in flat))
         self.assertFalse(any("pull" in a for a in flat))
 
+    def test_push_reports_stderr_on_failure(self):
+        td = make_tempdir()
+        run = GitRun()
+        run.when("push", returncode=1, stderr="fatal: unable to access ... 403")
+        code, detail = gh_publish.push_main(
+            Path(td),
+            "https://github.com/ya123-4/foo-dsh.git",
+            token="ghp_x",
+            owner="ya123-4",
+            ca_pem="FAKE-PEM",
+            run_git_capture=run,
+            ca_base_dir=Path(td),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("403", detail)
+        self.assertNotIn("ghp_x", detail)
+
+    def test_push_reports_pull_failure_distinctly(self):
+        td = make_tempdir()
+        run = GitRun()
+        run.when("ls-remote", stdout="abc\trefs/heads/main")
+        run.when("pull", returncode=1, stderr="CONFLICT")
+        code, detail = gh_publish.push_main(
+            Path(td),
+            "https://github.com/ya123-4/foo-dsh.git",
+            token="ghp_x",
+            owner="ya123-4",
+            ca_pem="FAKE-PEM",
+            run_git_capture=run,
+            ca_base_dir=Path(td),
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("pull", detail)
+        self.assertIn("CONFLICT", detail)
+
     def test_push_pulls_when_remote_nonempty(self):
         td = make_tempdir()
         run = GitRun()
         run.when("ls-remote", stdout="abc\trefs/heads/main")
-        code = gh_publish.push_main(
+        code, _detail = gh_publish.push_main(
             Path(td),
             "https://github.com/ya123-4/foo-dsh.git",
             token="ghp_x",

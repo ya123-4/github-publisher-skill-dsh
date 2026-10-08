@@ -15,6 +15,7 @@ git config, or a remote URL.
 """
 import argparse
 import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -259,9 +260,18 @@ def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz
         }
     if status == 422 and "already_exists" in text:
         assets = _list_release_assets(op, token, owner, repo, release_id)
+        local_digest = hashlib.sha256(data).hexdigest()
         for a in assets:
             if a.get("name") == p.name:
-                if a.get("size") == local_size:
+                digest = a.get("digest", "")
+                if digest:
+                    # GitHub asset API returns "sha256:<hex>"; digest wins
+                    # over size because a same-size rebuild must not pass
+                    # as the same artifact.
+                    same = digest.endswith(local_digest)
+                else:
+                    same = a.get("size") == local_size
+                if same:
                     return {
                         "status": "skipped_same",
                         "size": local_size,
@@ -285,7 +295,10 @@ def verify_release(opener, token: str, owner: str, repo: str, tag: str) -> dict:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     if status != 200:
         return {"status": "error", "message": f"HTTP {status}：未找到发布"}
-    info = json.loads(resp_body.decode("utf-8", "replace"))
+    try:
+        info = json.loads(resp_body.decode("utf-8", "replace"))
+    except Exception:
+        return {"status": "error", "message": "Release 响应解析失败"}
     return {
         "status": "ok",
         "tag": tag,
@@ -448,15 +461,22 @@ def push_main(
     ca_pem: str,
     run_git_capture=None,
     ca_base_dir: Path | None = None,
-) -> int:
+) -> tuple:
     """Ensure origin remote; pull --rebase when the remote is non-empty;
-    then push with process-only credentials. Returns git's exit code."""
+    then push with process-only credentials.
+
+    Returns (exit_code, detail): detail carries the failing stage and a
+    sanitized stderr tail for diagnostics (never the raw token).
+    """
     dir = Path(dir)
     run = run_git_capture or _default_git
     r = run(["git", "-C", str(dir), "remote", "get-url", "origin"])
     if r.returncode != 0:
         run(["git", "-C", str(dir), "remote", "add", "origin", repo_url])
-    ca = write_ca_tempfile(ca_pem, base_dir=ca_base_dir)
+    try:
+        ca = write_ca_tempfile(ca_pem, base_dir=ca_base_dir)
+    except OSError as exc:
+        return 1, f"无法写入临时 CA 文件：{exc}"
     basic = base64.b64encode(f"{owner}:{token}".encode()).decode()
     secure = _git_secure_args(str(ca), basic)
     try:
@@ -475,9 +495,11 @@ def push_main(
                 ]
             )
             if r.returncode != 0:
-                return r.returncode
+                return r.returncode, f"pull --rebase 失败：{r.stderr.strip()[:400]}"
         r = run(["git", "-C", str(dir), *secure, "push", "-u", "origin", "main"])
-        return r.returncode
+        if r.returncode != 0:
+            return r.returncode, f"push 失败：{r.stderr.strip()[:400]}"
+        return 0, ""
     finally:
         try:
             ca.unlink()
@@ -512,6 +534,33 @@ def _render_readme_zh(pkg: dict, name: str) -> str:
 
 
 def main(
+    argv,
+    *,
+    opener=None,
+    tls_probe=None,
+    sleep_s=2.0,
+    ca_bundle=None,
+    run_git=None,
+) -> int:
+    """Top-level entry: converts any unexpected exception into the
+    structured JSON/exit-code contract instead of a bare traceback."""
+    try:
+        return _main(
+            argv,
+            opener=opener,
+            tls_probe=tls_probe,
+            sleep_s=sleep_s,
+            ca_bundle=ca_bundle,
+            run_git=run_git,
+        )
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print(emit_result(False, "fatal", f"未预期错误：{exc}（脚本缺陷或环境问题）"))
+        return EXIT_CHECK
+
+
+def _main(
     argv,
     *,
     opener=None,
@@ -584,7 +633,7 @@ def main(
     # Stage 3: secure push
     ca_pem = ca_bundle if ca_bundle is not None else gh_check.fetch_peer_ca_bundle()
     repo_url = f"https://github.com/{owner}/{name}.git"
-    code = push_main(
+    code, detail = push_main(
         Path(args.dir),
         repo_url,
         token,
@@ -593,7 +642,13 @@ def main(
         run_git_capture=run_git,
     )
     if code != 0:
-        return _fail(EXIT_PUSH, "push", f"git push 失败（git 退出码 {code}）", token=token)
+        return _fail(
+            EXIT_PUSH,
+            "push",
+            f"git 推送阶段失败（退出码 {code}）"
+            + (f"：{gh_config.mask_token(detail, token)}" if detail else ""),
+            token=token,
+        )
 
     # Stage 4: Release
     tag = args.tag or f"v{pkg.get('version', '')}"

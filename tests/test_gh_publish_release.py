@@ -1,4 +1,5 @@
 """Tests for gh_publish stages 4-6: release, asset upload, verification."""
+import hashlib
 import io
 import json
 import shutil
@@ -12,7 +13,7 @@ sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import gh_publish  # noqa: E402
-from _helpers import FakeOpener, json_response, make_tempdir  # noqa: E402
+from _helpers import FakeOpener, FakeResponse, json_response, make_tempdir  # noqa: E402
 from test_gh_publish_git import GitRun  # noqa: E402
 
 
@@ -86,9 +87,110 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("人工", result["message"])
 
+    def test_upload_asset_same_sha256_skipped_even_if_size_differs(self):
+        td = make_tempdir()
+        tgz = Path(td) / "foo-dsh-0.1.0.tgz"
+        make_tgz(tgz, size=20)
+        digest = "sha256:" + hashlib.sha256(tgz.read_bytes()).hexdigest()
+        opener = FakeOpener(
+            [
+                json_response(422, {"errors": [{"message": "already_exists"}]}),
+                json_response(
+                    200,
+                    [
+                        {
+                            "name": "foo-dsh-0.1.0.tgz",
+                            "size": 999,  # stale size, but digest proves identity
+                            "digest": digest,
+                            "browser_download_url": "https://x/dl",
+                        }
+                    ],
+                ),
+            ]
+        )
+        result = gh_publish.upload_asset(opener, "ghp_x", "o", "r", 42, tgz)
+        self.assertEqual(result["status"], "skipped_same")
+
+    def test_upload_asset_diff_sha256_error_even_if_size_matches(self):
+        td = make_tempdir()
+        tgz = Path(td) / "foo-dsh-0.1.0.tgz"
+        make_tgz(tgz, size=20)
+        opener = FakeOpener(
+            [
+                json_response(422, {"errors": [{"message": "already_exists"}]}),
+                json_response(
+                    200,
+                    [
+                        {
+                            "name": "foo-dsh-0.1.0.tgz",
+                            "size": 20,  # same size, but content differs
+                            "digest": "sha256:" + "0" * 64,
+                            "browser_download_url": "https://x/dl",
+                        }
+                    ],
+                ),
+            ]
+        )
+        result = gh_publish.upload_asset(opener, "ghp_x", "o", "r", 42, tgz)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("人工", result["message"])
+
     def test_emit_result_masks_token(self):
         out = gh_publish.emit_result(False, "push", "token=ghp_x leaked?", token="ghp_x")
         self.assertNotIn("ghp_x", out)
+
+    def test_verify_release_bad_json_returns_error(self):
+        opener = FakeOpener([FakeResponse(200, b"<html>not json</html>")])
+        result = gh_publish.verify_release(opener, "ghp_x", "o", "r", "v0.1.0")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("解析", result["message"])
+
+    def test_main_unexpected_exception_returns_json_exit_2(self):
+        td = make_tempdir()
+        pkg_dir = Path(td) / "pkg"
+        pkg_dir.mkdir()
+        (pkg_dir / "package.json").write_text(
+            json.dumps({"name": "foo-dsh", "version": "0.1.0", "description": "d"}),
+            encoding="utf-8",
+        )
+        tgz = Path(td) / "foo-dsh-0.1.0.tgz"
+        make_tgz(tgz)
+        cfg = Path(td) / "config.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "owner": "ya123-4",
+                    "token": "ghp_x",
+                    "author": {"name": "DSH Maintainers", "email": "x@y.z"},
+                    "defaults": {"visibility": "public", "repo_suffix": "-dsh"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        opener = FakeOpener(
+            [
+                json_response(200, {"login": "ya123-4"}),  # GET /user
+                json_response(422, {"errors": [{"message": "name already exists"}]}),  # repo
+            ]
+        )
+
+        def exploding_git(argv, **kw):
+            raise OSError("git vanished")
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_publish.main(
+                ["--dir", str(pkg_dir), "--tgz", str(tgz), "--config", str(cfg)],
+                opener=opener,
+                tls_probe=lambda: (True, "ok"),
+                sleep_s=0,
+                ca_bundle="PEM",
+                run_git=exploding_git,
+            )
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["stage"], "fatal")
 
     def test_main_release_exists_exit_6(self):
         td = make_tempdir()

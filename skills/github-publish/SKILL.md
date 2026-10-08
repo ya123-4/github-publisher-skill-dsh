@@ -30,7 +30,15 @@ python <skills>/github-publish/scripts/gh_check.py [--config <配置文件>]
 ```
 
 判据：退出码 0 且输出 JSON 中 `ok=true`（`tls_ok`、`token_ok`、`git_ok` 全为 true）。
-不通过时按输出 `messages` 指引处理（常见：配置缺失 → 向用户索要一次 PAT 并写入配置）。
+
+若配置缺失（gh_check 报"无法读取配置文件"），向用户索要一次 PAT，然后用 **stdin** 方式写配置（
+token 绝不能出现在命令行参数里）：
+
+```
+echo <PAT> | python <skills>/github-publish/scripts/gh_config.py init --owner <owner>
+```
+
+判据：输出 JSON `ok=true` 且 `config_path` 指向实际写入位置（home 不可写时自动回落 ws-rt）。
 
 ### 第 2 步：执行入库
 
@@ -66,12 +74,12 @@ python <skills>/github-publish/scripts/gh_publish.py --dir <插件源码目录> 
 | 退出码 | 含义 | AI 的处理 |
 |---|---|---|
 | 0 | 成功 | 报告 URL |
-| 2 | 自检失败（配置/tgz/TLS/token） | 按 hint 处理：缺 PAT 就向用户索要一次；tgz 缺失就重新 npm pack |
+| 2 | 自检/脚本自身失败（含 `stage=fatal` 的未预期错误） | 按 hint 处理：缺 PAT 就向用户索要一次（stdin 方式写配置）；tgz 缺失就重新 npm pack |
 | 3 | 建仓失败 | 常见：token 权限不足（需 repo 作用域）——指引用户换 PAT |
 | 4 | 本地提交失败 | 检查插件目录可写、git 可用 |
-| 5 | 推送失败 | 常见：网络/证书。重试一次；仍失败报告 stderr |
+| 5 | 推送失败 | 输出 JSON 的 message 含 git stderr 摘要（pull/push 区分）；按摘要重试一次或报告用户 |
 | 6 | Release 失败 | 常见：tag 已存在——bump 插件 version 后重发 |
-| 7 | 资产上传失败 | 常见：同名资产内容不同——报告并请用户决定 |
+| 7 | 资产上传失败 | 常见：同名资产内容不同（按 sha256 判定）——报告并请用户决定 |
 
 ## 安全铁律（必须遵守）
 

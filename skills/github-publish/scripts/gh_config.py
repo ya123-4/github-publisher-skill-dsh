@@ -95,3 +95,69 @@ def mask_token(text: str, token: str) -> str:
     if not token:
         return text
     return text.replace(token, "***")
+
+
+def main(argv=None, *, stdin=None, home=None, workspace=None) -> int:
+    """CLI: `python gh_config.py init` reads the PAT from STDIN (never from
+    argv, so the token never shows up in process listings or shell history)
+    and writes the config file, falling back across writable candidates."""
+    import argparse
+    import json as _json
+    import sys as _sys
+
+    ap = argparse.ArgumentParser(
+        prog="gh_config.py", description="github-publisher config store"
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p_init = sub.add_parser(
+        "init", help="create the config file from a PAT read on stdin"
+    )
+    p_init.add_argument("--owner", default="ya123-4", help="GitHub owner (default ya123-4)")
+    p_init.add_argument("--author-name", default=DEFAULT_AUTHOR_NAME)
+    p_init.add_argument("--author-email", default=DEFAULT_AUTHOR_EMAIL)
+    args = ap.parse_args(argv)
+
+    if args.cmd == "init":
+        stream = stdin if stdin is not None else _sys.stdin
+        token = stream.read().strip()
+        if not token:
+            print(_json.dumps({"ok": False, "message": "stdin 未提供 PAT"}, ensure_ascii=False))
+            return 2
+        cfg = config_template(args.owner)
+        cfg["token"] = token
+        cfg["author"] = {"name": args.author_name, "email": args.author_email}
+        written = None
+        failures = []
+        for c in _candidates(workspace, home):
+            try:
+                save_config(c, cfg)
+                written = c
+                break
+            except Exception as exc:
+                failures.append(f"{c}: {exc}")
+        if written is None:
+            print(
+                _json.dumps(
+                    {"ok": False, "message": "没有可写的配置位置", "failures": failures},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        print(
+            _json.dumps(
+                {"ok": True, "config_path": str(written), "token_stored": True},
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    import sys as _sys
+
+    try:
+        _sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    _sys.exit(main())

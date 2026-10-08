@@ -20,7 +20,13 @@ The AI will then publish any number of plugins fully automatically.
    - **Fine-grained token**: grant **Administration (Read and write, Account)**
      and **Contents (Read and write, All repositories)**.
 3. Copy the token (`ghp_...` / `github_pat_...`) and give it to the AI in the
-   DeepSeek Harness chat once; the AI writes it into the dedicated config file.
+   DeepSeek Harness chat once; the AI writes it into the dedicated config file
+   via stdin (the token never appears on a command line):
+
+   ```
+   echo <PAT> | python <skill-dir>/skills/github-publish/scripts/gh_config.py init --owner ya123-4
+   ```
+
 4. Verify: run the self-check
 
    ```

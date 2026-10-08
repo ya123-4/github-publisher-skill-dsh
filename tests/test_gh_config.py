@@ -91,6 +91,75 @@ class ConfigTests(unittest.TestCase):
         got = gh_config.resolve_config_path(workspace=str(deep), home=str(home))
         self.assertEqual(got, cfg)
 
+    def test_cli_init_writes_config_from_stdin(self):
+        td = make_tempdir()
+        home = Path(td) / "home"
+        ws = Path(td) / "ws"
+        import io
+        import json as _json
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_config.main(
+                ["init", "--owner", "ya123-4"],
+                stdin=io.StringIO("ghp_from_stdin\n"),
+                home=str(home),
+                workspace=str(ws),
+            )
+        self.assertEqual(code, 0)
+        payload = _json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertNotIn("ghp_from_stdin", buf.getvalue())
+        cfg = gh_config.load_config(home / ".dsh" / "github-publisher" / "config.json")
+        self.assertEqual(cfg["token"], "ghp_from_stdin")
+        self.assertEqual(cfg["owner"], "ya123-4")
+
+    def test_cli_init_empty_stdin_exit_2(self):
+        td = make_tempdir()
+        import io
+        import json as _json
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_config.main(
+                ["init"],
+                stdin=io.StringIO("  \n"),
+                home=str(Path(td) / "home"),
+                workspace=str(Path(td) / "ws"),
+            )
+        self.assertEqual(code, 2)
+        payload = _json.loads(buf.getvalue())
+        self.assertFalse(payload["ok"])
+
+    def test_cli_init_falls_back_when_home_path_unwritable(self):
+        td = make_tempdir()
+        home = Path(td) / "home"
+        ws = Path(td) / "ws"
+        # make the home candidate's parent chain un-creatable: .dsh is a FILE
+        home.mkdir()
+        (home / ".dsh").write_text("i am a file", encoding="utf-8")
+        import io
+        import json as _json
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_config.main(
+                ["init", "--owner", "ya123-4"],
+                stdin=io.StringIO("ghp_fallback\n"),
+                home=str(home),
+                workspace=str(ws),
+            )
+        self.assertEqual(code, 0)
+        payload = _json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            payload["config_path"],
+            str(ws / "ws-rt" / "github-publisher-config.json"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

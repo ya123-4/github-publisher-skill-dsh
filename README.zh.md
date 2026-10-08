@@ -18,7 +18,12 @@ GitHub 不允许匿名写入，所以 token 只需你提供一次，之后 AI �
    - **Fine-grained token**：授予 **Administration（Read and write，Account）**
      与 **Contents（Read and write，All repositories）**。
 3. 把 token（`ghp_...` / `github_pat_...`）在 DeepSeek Harness 对话里交给 AI 一次，
-   AI 会写入专属配置文件。
+   AI 会通过 **stdin** 写入专属配置文件（token 绝不出现在命令行参数里）：
+
+   ```
+   echo <PAT> | python <skill-dir>/skills/github-publish/scripts/gh_config.py init --owner ya123-4
+   ```
+
 4. 验证：运行自检
 
    ```
