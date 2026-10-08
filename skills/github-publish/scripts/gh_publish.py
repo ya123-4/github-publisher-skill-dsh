@@ -54,11 +54,16 @@ def _default_repo_name(pkg_name: str, suffix: str) -> str:
     return pkg_name + suffix
 
 
-def emit_result(ok: bool, stage: str, message: str, hint: str = "", **fields) -> str:
-    payload = {"ok": ok, "stage": stage, "message": message}
+def emit_result(ok: bool, stage: str, message: str, hint: str = "", token: str | None = None, **fields) -> str:
+    def _m(s):
+        if not token:
+            return s
+        return gh_config.mask_token(str(s), token)
+
+    payload = {"ok": ok, "stage": stage, "message": _m(message)}
     if hint:
-        payload["hint"] = hint
-    payload.update(fields)
+        payload["hint"] = _m(hint)
+    payload.update({k: (_m(v) if isinstance(v, str) else v) for k, v in fields.items()})
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -153,9 +158,144 @@ def _parse_args(argv):
     return parser.parse_args(argv)
 
 
-def _fail(code, stage, message, hint="", **fields):
-    print(emit_result(False, stage, message, hint=hint, **fields))
+def _fail(code, stage, message, hint="", token=None, **fields):
+    print(emit_result(False, stage, message, hint=hint, token=token, **fields))
     return code
+
+
+# ---------- Stage 4-6: release, asset upload, verification ----------
+
+def _api_headers(token: str, content_type: str | None = None) -> dict:
+    h = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "github-publisher-skill-dsh",
+    }
+    if content_type:
+        h["Content-Type"] = content_type
+    return h
+
+
+def create_release(opener, token: str, owner: str, repo: str, tag: str, body: str) -> dict:
+    url = f"{API}/repos/{owner}/{repo}/releases"
+    data = json.dumps({"tag_name": tag, "name": tag, "body": body}).encode("utf-8")
+    op = opener or build_opener()
+    try:
+        req = Request(url, data=data, headers=_api_headers(token, "application/json"), method="POST")
+        with op.open(req, timeout=15) as resp:
+            status, resp_body = resp.status, resp.read()
+    except Exception as exc:
+        return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
+    text = resp_body.decode("utf-8", "replace")
+    if status == 201:
+        try:
+            info = json.loads(text)
+        except Exception:
+            info = {}
+        return {
+            "status": "created",
+            "release_id": info.get("id"),
+            "html_url": info.get("html_url", ""),
+        }
+    if status == 422 and ("already_exists" in text or "already exists" in text.lower()):
+        return {
+            "status": "exists",
+            "message": "发布已存在，请 bump 版本或手动删除后重试",
+        }
+    return {"status": "error", "message": f"HTTP {status}：{text[:200]}"}
+
+
+def _list_release_assets(opener, token: str, owner: str, repo: str, release_id: int) -> list:
+    url = f"{API}/repos/{owner}/{repo}/releases/{release_id}/assets"
+    try:
+        req = Request(url, headers=_api_headers(token))
+        with opener.open(req, timeout=15) as resp:
+            status, resp_body = resp.status, resp.read()
+    except Exception as exc:
+        return [{"__error": gh_config.mask_token(str(exc), token)}]
+    if status != 200:
+        return [{"__error": f"HTTP {status}"}]
+    try:
+        return json.loads(resp_body.decode("utf-8"))
+    except Exception:
+        return [{"__error": "assets 响应解析失败"}]
+
+
+def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz_path: Path) -> dict:
+    p = Path(tgz_path)
+    local_size = p.stat().st_size
+    url = (
+        f"https://uploads.github.com/repos/{owner}/{repo}/releases/{release_id}"
+        f"/assets?name={p.name}"
+    )
+    op = opener or build_opener()
+    try:
+        data = p.read_bytes()
+        req = Request(url, data=data, headers=_api_headers(token, "application/octet-stream"), method="POST")
+        with op.open(req, timeout=120) as resp:
+            status, resp_body = resp.status, resp.read()
+    except Exception as exc:
+        return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
+    text = resp_body.decode("utf-8", "replace")
+    if status == 201:
+        try:
+            info = json.loads(text)
+        except Exception:
+            info = {}
+        return {
+            "status": "uploaded",
+            "size": info.get("size", local_size),
+            "browser_download_url": info.get("browser_download_url", ""),
+        }
+    if status == 422 and "already_exists" in text:
+        assets = _list_release_assets(op, token, owner, repo, release_id)
+        for a in assets:
+            if a.get("name") == p.name:
+                if a.get("size") == local_size:
+                    return {
+                        "status": "skipped_same",
+                        "size": local_size,
+                        "browser_download_url": a.get("browser_download_url", ""),
+                    }
+                return {
+                    "status": "error",
+                    "message": "资产已存在但内容不同，需人工处理",
+                }
+        return {"status": "error", "message": f"HTTP 422：{text[:200]}"}
+    return {"status": "error", "message": f"HTTP {status}：{text[:200]}"}
+
+
+def verify_release(opener, token: str, owner: str, repo: str, tag: str) -> dict:
+    url = f"{API}/repos/{owner}/{repo}/releases/tags/{tag}"
+    op = opener or build_opener()
+    try:
+        req = Request(url, headers=_api_headers(token))
+        with op.open(req, timeout=15) as resp:
+            status, resp_body = resp.status, resp.read()
+    except Exception as exc:
+        return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
+    if status != 200:
+        return {"status": "error", "message": f"HTTP {status}：未找到发布"}
+    info = json.loads(resp_body.decode("utf-8", "replace"))
+    return {
+        "status": "ok",
+        "tag": tag,
+        "html_url": info.get("html_url", ""),
+        "assets": [
+            {"name": a.get("name"), "size": a.get("size"), "browser_download_url": a.get("browser_download_url", "")}
+            for a in info.get("assets", [])
+        ],
+    }
+
+
+def _render_release_body(pkg: dict, name: str, tag: str) -> str:
+    version = pkg.get("version", "")
+    desc = pkg.get("description", "")
+    return (
+        f"## {name} {tag}\n\n{desc}\n\n"
+        f"DeepSeek Harness 技能插件自动入库发布。\n\n"
+        f"安装：下载资产 `{name}-{version}.tgz` 后在 DSH 中以 file: 依赖安装。\n"
+    )
 
 
 # ---------- Stage 2-3: local repo preparation and secure push ----------
@@ -396,13 +536,13 @@ def main(
     except gh_config.ConfigError as exc:
         return _fail(EXIT_CHECK, "check", str(exc))
     if not env["tls_ok"] or not env["token_ok"]:
-        return _fail(EXIT_CHECK, "check", "；".join(env["messages"]))
+        return _fail(EXIT_CHECK, "check", "；".join(env["messages"]), token=token)
 
     # Stage 1: idempotent repo creation
     try:
         pkg = _read_package(args.dir)
     except ValueError as exc:
-        return _fail(EXIT_CHECK, "check", str(exc))
+        return _fail(EXIT_CHECK, "check", str(exc), token=token)
     suffix = cfg.get("defaults", {}).get("repo_suffix", "-dsh")
     name = args.repo_name or _default_repo_name(pkg.get("name", ""), suffix)
     description = args.description or pkg.get("description", "")
@@ -411,7 +551,7 @@ def main(
         opener, token, owner, name, description, private, sleep_s=sleep_s
     )
     if repo["status"] == "error":
-        return _fail(EXIT_REPO, "repo", repo["message"])
+        return _fail(EXIT_REPO, "repo", repo["message"], token=token)
 
     # Stage 2: local repo preparation
     license_path = Path(args.dir) / "LICENSE"
@@ -431,7 +571,7 @@ def main(
             run_git=run_git,
         )
     except RuntimeError as exc:
-        return _fail(EXIT_COMMIT, "commit", str(exc))
+        return _fail(EXIT_COMMIT, "commit", str(exc), token=token)
 
     # Stage 3: secure push
     ca_pem = ca_bundle if ca_bundle is not None else gh_check.fetch_peer_ca_bundle()
@@ -445,8 +585,37 @@ def main(
         run_git_capture=run_git,
     )
     if code != 0:
-        return _fail(EXIT_PUSH, "push", f"git push 失败（git 退出码 {code}）")
-    print(emit_result(True, "push", "推送成功", repo_name=name, html_url=repo["html_url"]))
+        return _fail(EXIT_PUSH, "push", f"git push 失败（git 退出码 {code}）", token=token)
+
+    # Stage 4: Release
+    tag = args.tag or f"v{pkg.get('version', '')}"
+    rel = create_release(opener, token, owner, name, tag, _render_release_body(pkg, name, tag))
+    if rel["status"] == "error":
+        return _fail(EXIT_RELEASE, "release", rel["message"], token=token)
+    if rel["status"] == "exists":
+        return _fail(EXIT_RELEASE, "release", rel["message"], token=token)
+
+    # Stage 5: asset upload
+    up = upload_asset(opener, token, owner, name, rel["release_id"], tgz)
+    if up["status"] == "error":
+        return _fail(EXIT_ASSET, "asset", up["message"], token=token)
+
+    # Stage 6: verification + report
+    ver = verify_release(opener, token, owner, name, tag)
+    if ver.get("status") != "ok":
+        return _fail(EXIT_RELEASE, "verify", ver.get("message", "验证失败"), token=token)
+    print(
+        emit_result(
+            True,
+            "done",
+            "入库完成",
+            repo_url=f"https://github.com/{owner}/{name}",
+            release_url=ver["html_url"],
+            asset_url=up.get("browser_download_url", ""),
+            asset_status=up["status"],
+            tag=tag,
+        )
+    )
     return EXIT_OK
 
 
