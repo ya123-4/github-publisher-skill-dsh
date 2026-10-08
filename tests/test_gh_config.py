@@ -12,10 +12,10 @@ sys.path.insert(0, str(SCRIPTS))
 import gh_config  # noqa: E402
 
 # The DSH sandbox denies writes under %LOCALAPPDATA%\Temp to child processes,
-# so tests use a temp dir inside the workspace instead of tempfile defaults.
+# so tests use a temp dir outside the repo instead of tempfile defaults.
 # tempfile.mkdtemp() is also avoided: os.mkdir(0o700) sets a restrictive DACL
 # on Windows that the sandbox then blocks writes through; plain mkdir() works.
-WORKSPACE_TMP = Path(__file__).resolve().parents[1] / "tests" / "tmp"
+WORKSPACE_TMP = Path(__file__).resolve().parents[2] / ".tmp-github-publisher-tests"
 
 
 def make_tempdir():
