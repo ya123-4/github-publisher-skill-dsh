@@ -14,7 +14,10 @@ used only for local operations and the push. The token never touches disk,
 git config, or a remote URL.
 """
 import argparse
+import base64
 import json
+import os
+import subprocess
 import sys
 import time
 import urllib.error
@@ -155,7 +158,220 @@ def _fail(code, stage, message, hint="", **fields):
     return code
 
 
-def main(argv, *, opener=None, tls_probe=None, sleep_s=2.0) -> int:
+# ---------- Stage 2-3: local repo preparation and secure push ----------
+
+GITIGNORE_TEMPLATE = """# npm / node
+node_modules/
+*.tgz
+dist/
+.npm-cache/
+
+# python
+__pycache__/
+*.pyc
+
+# local git publishing state (never commit the token)
+*config.json
+.env
+
+# superpowers sdd workspace
+.superpowers/
+"""
+
+DEFAULT_MIT_LICENSE = """MIT License
+
+Copyright (c) 2026 DSH Maintainers
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
+
+def _default_git(argv, cwd=None, env=None):
+    return subprocess.run(
+        argv,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _git_secure_args(ca_path: str, basic: str):
+    return [
+        "-c",
+        "http.sslBackend=openssl",
+        "-c",
+        f"http.sslCAInfo={ca_path}",
+        "-c",
+        f"http.extraHeader=Authorization: Basic {basic}",
+    ]
+
+
+def write_ca_tempfile(ca_pem: str, base_dir: Path | None = None) -> Path:
+    base = Path(base_dir) if base_dir else Path.cwd()
+    p = base / f".github-publisher-ca-{os.getpid()}.pem"
+    p.write_text(ca_pem, encoding="utf-8")
+    return p
+
+
+def prepare_local_repo(
+    dir: Path,
+    author: dict,
+    readme_en: str,
+    readme_zh: str,
+    license_text: str,
+    pkg: dict,
+    run_git=None,
+) -> bool:
+    """git init (if needed), write README/LICENSE/.gitignore, commit.
+
+    Returns True when a new commit was created, False when there was
+    nothing to commit.
+    """
+    dir = Path(dir)
+    run = run_git or _default_git
+    if not (dir / ".git").exists():
+        r = run(["git", "init", "-b", "main", str(dir)])
+        if r.returncode != 0:
+            raise RuntimeError(f"git init 失败：{r.stderr}")
+    (dir / "README.md").write_text(readme_en, encoding="utf-8")
+    (dir / "README.zh.md").write_text(readme_zh, encoding="utf-8")
+    (dir / "LICENSE").write_text(license_text, encoding="utf-8")
+    gi = dir / ".gitignore"
+    if not gi.exists():
+        gi.write_text(GITIGNORE_TEMPLATE, encoding="utf-8")
+    env = dict(os.environ)
+    env["GIT_AUTHOR_NAME"] = author.get("name", "")
+    env["GIT_AUTHOR_EMAIL"] = author.get("email", "")
+    env["GIT_COMMITTER_NAME"] = author.get("name", "")
+    env["GIT_COMMITTER_EMAIL"] = author.get("email", "")
+    r = run(["git", "add", "-A"], cwd=str(dir), env=env)
+    if r.returncode != 0:
+        raise RuntimeError(f"git add 失败：{r.stderr}")
+    r = run(["git", "diff", "--cached", "--quiet"], cwd=str(dir), env=env)
+    if r.returncode == 0:
+        return False
+    msg = (
+        f"Initial import: {pkg.get('name', 'plugin')} {pkg.get('version', '')}"
+        " as a DeepSeek Harness bundle"
+    )
+    r = run(["git", "commit", "-m", msg], cwd=str(dir), env=env)
+    if r.returncode != 0:
+        raise RuntimeError(f"git commit 失败：{r.stderr}")
+    return True
+
+
+def remote_is_empty(run, repo_url: str, token: str, owner: str, ca_pem: str) -> bool:
+    ca = write_ca_tempfile(ca_pem)
+    basic = base64.b64encode(f"{owner}:{token}".encode()).decode()
+    try:
+        r = run(["git", *_git_secure_args(str(ca), basic), "ls-remote", "--heads", repo_url])
+        return r.returncode == 0 and not r.stdout.strip()
+    finally:
+        try:
+            ca.unlink()
+        except OSError:
+            pass
+
+
+def push_main(
+    dir: Path,
+    repo_url: str,
+    token: str,
+    owner: str,
+    ca_pem: str,
+    run_git_capture=None,
+    ca_base_dir: Path | None = None,
+) -> int:
+    """Ensure origin remote; pull --rebase when the remote is non-empty;
+    then push with process-only credentials. Returns git's exit code."""
+    dir = Path(dir)
+    run = run_git_capture or _default_git
+    r = run(["git", "-C", str(dir), "remote", "get-url", "origin"])
+    if r.returncode != 0:
+        run(["git", "-C", str(dir), "remote", "add", "origin", repo_url])
+    ca = write_ca_tempfile(ca_pem, base_dir=ca_base_dir)
+    basic = base64.b64encode(f"{owner}:{token}".encode()).decode()
+    secure = _git_secure_args(str(ca), basic)
+    try:
+        if not remote_is_empty(run, repo_url, token, owner, ca_pem):
+            r = run(
+                [
+                    "git",
+                    "-C",
+                    str(dir),
+                    *secure,
+                    "pull",
+                    "--rebase",
+                    "origin",
+                    "main",
+                    "--allow-unrelated-histories",
+                ]
+            )
+            if r.returncode != 0:
+                return r.returncode
+        r = run(["git", "-C", str(dir), *secure, "push", "-u", "origin", "main"])
+        return r.returncode
+    finally:
+        try:
+            ca.unlink()
+        except OSError:
+            pass
+
+
+def _render_readme_en(pkg: dict, name: str) -> str:
+    desc = pkg.get("description", "") or name
+    version = pkg.get("version", "")
+    return (
+        f"# {name}\n\n{desc}\n\n"
+        f"DeepSeek Harness skill plugin, version {version}.\n\n"
+        "## Install\n\n"
+        f"`npm install <this package>` (tgz: `{name}-{version}.tgz`).\n\n"
+        "Published automatically by [github-publisher-skill-dsh]"
+        "(https://github.com/ya123-4/github-publisher-skill-dsh).\n"
+    )
+
+
+def _render_readme_zh(pkg: dict, name: str) -> str:
+    desc = pkg.get("description", "") or name
+    version = pkg.get("version", "")
+    return (
+        f"# {name}\n\n{desc}\n\n"
+        f"DeepSeek Harness 技能插件，版本 {version}。\n\n"
+        "## 安装\n\n"
+        f"`npm install <本包>`（tgz 资产：`{name}-{version}.tgz`）。\n\n"
+        "由 [github-publisher-skill-dsh]"
+        "(https://github.com/ya123-4/github-publisher-skill-dsh) 自动入库发布。\n"
+    )
+
+
+def main(
+    argv,
+    *,
+    opener=None,
+    tls_probe=None,
+    sleep_s=2.0,
+    ca_bundle=None,
+    run_git=None,
+) -> int:
     args = _parse_args(argv)
 
     # Stage 0a: tgz sanity (packaging is the caller's job, we only verify)
@@ -196,11 +412,41 @@ def main(argv, *, opener=None, tls_probe=None, sleep_s=2.0) -> int:
     )
     if repo["status"] == "error":
         return _fail(EXIT_REPO, "repo", repo["message"])
-    print(
-        emit_result(
-            True, "repo", repo["message"], repo_name=name, html_url=repo["html_url"]
-        )
+
+    # Stage 2: local repo preparation
+    license_path = Path(args.dir) / "LICENSE"
+    license_text = (
+        license_path.read_text(encoding="utf-8")
+        if license_path.exists()
+        else DEFAULT_MIT_LICENSE
     )
+    try:
+        prepare_local_repo(
+            Path(args.dir),
+            cfg.get("author", {"name": "DSH Maintainers", "email": ""}),
+            _render_readme_en(pkg, name),
+            _render_readme_zh(pkg, name),
+            license_text,
+            pkg,
+            run_git=run_git,
+        )
+    except RuntimeError as exc:
+        return _fail(EXIT_COMMIT, "commit", str(exc))
+
+    # Stage 3: secure push
+    ca_pem = ca_bundle if ca_bundle is not None else gh_check.fetch_peer_ca_bundle()
+    repo_url = f"https://github.com/{owner}/{name}.git"
+    code = push_main(
+        Path(args.dir),
+        repo_url,
+        token,
+        owner,
+        ca_pem,
+        run_git_capture=run_git,
+    )
+    if code != 0:
+        return _fail(EXIT_PUSH, "push", f"git push 失败（git 退出码 {code}）")
+    print(emit_result(True, "push", "推送成功", repo_name=name, html_url=repo["html_url"]))
     return EXIT_OK
 
 
