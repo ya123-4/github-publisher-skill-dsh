@@ -1,0 +1,16 @@
+# npm / node
+node_modules/
+*.tgz
+dist/
+.npm-cache/
+
+# python
+__pycache__/
+*.pyc
+
+# local git publishing state
+*config.json
+.env
+
+# superpowers sdd workspace
+.superpowers/

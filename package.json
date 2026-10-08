@@ -1,0 +1,40 @@
+{
+  "name": "github-publisher-skill-dsh",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness skill bundle: lets the AI publish a newly created DSH plugin straight to GitHub with zero user interaction — creates the repo (default public), pushes the source, creates a vX.Y.Z Release and uploads the .tgz as a release asset. Skill-only bundle (Python stdlib scripts); no host hooks, no native tools, no install scripts.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "skills",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-skill",
+    "github",
+    "publish",
+    "release",
+    "automation"
+  ],
+  "scripts": {
+    "pack": "npm pack"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
