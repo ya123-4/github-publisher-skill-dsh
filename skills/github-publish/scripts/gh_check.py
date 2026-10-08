@@ -127,3 +127,37 @@ def check_environment(config_path, opener=None, tls_probe=None) -> dict:
     result["token_ok"] = token_ok
     messages.append(token_msg)
     return result
+
+
+def main(argv=None, *, opener=None, tls_probe=None) -> int:
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(
+        prog="gh_check.py", description="github-publisher environment self-check"
+    )
+    ap.add_argument("--config", default=None, help="配置文件路径（默认自动探测）")
+    args = ap.parse_args(argv)
+    try:
+        from pathlib import Path
+
+        path = (
+            Path(args.config) if args.config else gh_config.resolve_config_path()
+        )
+        result = check_environment(path, opener=opener, tls_probe=tls_probe)
+    except gh_config.ConfigError as exc:
+        print(json.dumps({"ok": False, "stage": "check", "message": str(exc)}, ensure_ascii=False))
+        return 2
+    result["ok"] = bool(result["tls_ok"] and result["token_ok"] and result["git_ok"])
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result["ok"] else 2
+
+
+if __name__ == "__main__":
+    import sys
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+    sys.exit(main(sys.argv[1:]))

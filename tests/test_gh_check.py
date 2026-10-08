@@ -78,6 +78,51 @@ class CheckTests(unittest.TestCase):
         )
         self.assertEqual(bundle.count("BEGIN CERTIFICATE"), 1)
 
+    def test_cli_missing_config_exit_2(self):
+        td = make_tempdir()
+        import io
+        from contextlib import redirect_stdout
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_check.main(
+                ["--config", str(Path(td) / "missing.json")]
+            )
+        self.assertEqual(code, 2)
+        payload = json.loads(buf.getvalue())
+        self.assertFalse(payload["ok"])
+
+    def test_cli_ok_with_fakes(self):
+        td = make_tempdir()
+        cfg = Path(td) / "config.json"
+        cfg.write_text(
+            json.dumps(
+                {
+                    "owner": "ya123-4",
+                    "token": "ghp_x",
+                    "author": {"name": "DSH Maintainers", "email": "x@y.z"},
+                    "defaults": {"visibility": "public", "repo_suffix": "-dsh"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        import io
+        from contextlib import redirect_stdout
+
+        opener = FakeOpener([json_response(200, {"login": "ya123-4"})])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = gh_check.main(
+                ["--config", str(cfg)],
+                opener=opener,
+                tls_probe=lambda: (True, "ok"),
+            )
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["token_ok"])
+        self.assertNotIn("ghp_x", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
