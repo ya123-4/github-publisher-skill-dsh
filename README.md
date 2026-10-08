@@ -1,5 +1,7 @@
 # github-publisher-skill-dsh
 
+> English | [中文](README.zh.md)
+
 DeepSeek Harness skill bundle that lets the AI publish a newly created DSH plugin
 straight to GitHub with **zero user interaction**: create the repo (default public),
 push the source, create a `vX.Y.Z` Release and upload the `.tgz` as a release asset.

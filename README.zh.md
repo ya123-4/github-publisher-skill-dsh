@@ -1,5 +1,7 @@
 # github-publisher-skill-dsh
 
+> [English](README.md) | 中文
+
 DeepSeek Harness 技能插件：让 AI 把新创造的 DSH 插件**全自动**入库 GitHub——
 创建仓库（默认公开）、推送源码、创建 `vX.Y.Z` Release 并把 `.tgz` 作为 Release 资产上传。
 全程用户零操作。
