@@ -91,6 +91,26 @@ class RepoTests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("权限", result["message"])
 
+    def test_create_403_rate_limit_distinguished(self):
+        opener = FakeOpener(
+            [json_response(403, {"message": "You have exceeded a secondary rate limit"})]
+        )
+        result = gh_publish.create_repo_if_missing(
+            opener, "ghp_x", "ya123-4", "foo-dsh", "desc", False, sleep_s=0
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("限流", result["message"])
+        self.assertNotIn("权限", result["message"])
+
+    def test_resolve_private_flags(self):
+        # flag absent -> config visibility
+        self.assertFalse(gh_publish._resolve_private(False, False, "public"))
+        self.assertTrue(gh_publish._resolve_private(False, False, "private"))
+        # --private wins
+        self.assertTrue(gh_publish._resolve_private(True, False, "public"))
+        # --public overrides config private
+        self.assertFalse(gh_publish._resolve_private(False, True, "private"))
+
     def test_create_retry_then_success(self):
         opener = FakeOpener(
             [

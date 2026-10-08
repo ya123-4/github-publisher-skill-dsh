@@ -8,6 +8,7 @@ import json
 import shutil
 import socket
 import ssl
+import time
 import urllib.error
 from urllib.request import Request, build_opener
 
@@ -16,8 +17,9 @@ import gh_config
 API_USER = "https://api.github.com/user"
 
 
-def validate_token(token: str, owner: str, opener=None) -> tuple:
-    """(ok, message): GET /user with the token. 200 -> (True, login)."""
+def validate_token(token: str, owner: str, opener=None, retries: int = 2, sleep_s: float = 2.0) -> tuple:
+    """(ok, message): GET /user with the token. 200 -> (True, login).
+    Transient network failures retry `retries` more times."""
     if not token:
         return (False, "token 为空，请先完成一次性 PAT 配置")
     req = Request(
@@ -29,27 +31,33 @@ def validate_token(token: str, owner: str, opener=None) -> tuple:
         },
     )
     op = opener or build_opener()
-    try:
-        with op.open(req, timeout=15) as resp:
-            status = resp.status
-            body = resp.read()
-    except urllib.error.HTTPError as exc:
-        # real urllib raises HTTPError for 4xx/5xx instead of a response
-        status = exc.code
+    last = "未知网络错误"
+    for attempt in range(retries + 1):
+        if attempt:
+            time.sleep(sleep_s)
         try:
-            body = exc.read()
-        except Exception:
-            body = b""
-    except Exception as exc:  # URLError, timeout, TLS failures
-        return (False, f"网络错误：{gh_config.mask_token(str(exc), token)}")
-    if status == 200:
-        login = "?"
-        try:
-            login = json.loads(body.decode("utf-8")).get("login", "?")
-        except Exception:
-            pass
-        return (True, login)
-    return (False, f"HTTP {status}")
+            with op.open(req, timeout=15) as resp:
+                status = resp.status
+                body = resp.read()
+        except urllib.error.HTTPError as exc:
+            # real urllib raises HTTPError for 4xx/5xx instead of a response
+            status = exc.code
+            try:
+                body = exc.read()
+            except Exception:
+                body = b""
+        except Exception as exc:  # URLError, timeout, TLS failures
+            last = f"网络错误：{gh_config.mask_token(str(exc), token)}"
+            continue
+        if status == 200:
+            login = "?"
+            try:
+                login = json.loads(body.decode("utf-8")).get("login", "?")
+            except Exception:
+                pass
+            return (True, login)
+        return (False, f"HTTP {status}")
+    return (False, last)
 
 
 def probe_tls(host: str = "github.com", port: int = 443, connect=None, wrap=None) -> tuple:
@@ -160,7 +168,17 @@ def main(argv=None, *, opener=None, tls_probe=None) -> int:
         )
         result = check_environment(path, opener=opener, tls_probe=tls_probe)
     except gh_config.ConfigError as exc:
-        print(json.dumps({"ok": False, "stage": "check", "message": str(exc)}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "stage": "check",
+                    "message": str(exc),
+                    "hint": "运行 gh_config.py init 完成一次性 PAT 配置",
+                },
+                ensure_ascii=False,
+            )
+        )
         return 2
     result["ok"] = bool(result["tls_ok"] and result["token_ok"] and result["git_ok"])
     print(json.dumps(result, ensure_ascii=False))

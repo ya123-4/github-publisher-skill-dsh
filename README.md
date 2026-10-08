@@ -37,10 +37,11 @@ The AI will then publish any number of plugins fully automatically.
 
 ## Config file
 
-Detected in order (first existing wins; if none exists, the first path is used):
+Detected in order (first existing + readable wins; if none exists, the first
+path is used and `gh_config.py init` falls back across candidates):
 
 1. `%USERPROFILE%\.dsh\github-publisher\config.json`
-2. `<workspace>\ws-rt\github-publisher-config.json`
+2. `<workspace>\ws-rt\github-publisher-config.json` (and ancestors of the cwd)
 
 ```json
 {

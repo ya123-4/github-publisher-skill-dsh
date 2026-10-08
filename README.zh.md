@@ -34,10 +34,11 @@ GitHub 不允许匿名写入，所以 token 只需你提供一次，之后 AI �
 
 ## 配置文件
 
-按顺序探测（取第一个已存在者；都不存在时默认用第一个路径）：
+按顺序探测（取第一个存在且可读者；都不存在时默认用第一个路径，`gh_config.py init`
+写入时会自动跨候选回落）：
 
 1. `%USERPROFILE%\.dsh\github-publisher\config.json`
-2. `<workspace>\ws-rt\github-publisher-config.json`
+2. `<workspace>\ws-rt\github-publisher-config.json`（含 cwd 的各层祖先目录）
 
 ```json
 {

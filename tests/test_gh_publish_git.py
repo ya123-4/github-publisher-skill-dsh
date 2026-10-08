@@ -18,20 +18,25 @@ LICENSE_TEXT = "MIT License (test)"
 
 
 class GitRun:
-    """Fake run_git_capture: records argv; per-call stdout/returncode/stderr."""
+    """Fake run_git_capture: records argv; per-call stdout/returncode/stderr
+    queues (each `when` appends one response; exhausted queues default to
+    success so multi-invocation sequences can model transient failures)."""
 
     def __init__(self):
         self.calls = []
         self.handlers = {}
 
     def when(self, needle, stdout="", returncode=0, stderr=""):
-        self.handlers[needle] = (stdout, returncode, stderr)
+        self.handlers.setdefault(needle, []).append((stdout, returncode, stderr))
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
-        for needle, (stdout, returncode, stderr) in self.handlers.items():
+        for needle, queue in self.handlers.items():
             if any(needle in a for a in argv):
-                return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+                if queue:
+                    stdout, returncode, stderr = queue.pop(0)
+                    return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
 
@@ -66,7 +71,9 @@ class GitStageTests(unittest.TestCase):
         self.assertIn("foo-dsh", (Path(td) / "README.md").read_text(encoding="utf-8"))
         self.assertIn("自动入库插件", (Path(td) / "README.zh.md").read_text(encoding="utf-8"))
         self.assertIn("MIT License", (Path(td) / "LICENSE").read_text(encoding="utf-8"))
-        self.assertIn("config.json", (Path(td) / ".gitignore").read_text(encoding="utf-8"))
+        gi = (Path(td) / ".gitignore").read_text(encoding="utf-8")
+        self.assertIn("config.json", gi)
+        self.assertIn(".github-publisher-ca-", gi)
         r = real_git(["log", "-1", "--format=%an <%ae>"], td)
         self.assertEqual(r.stdout.strip(), "DSH Maintainers <dsh-maintainers@users.noreply.github.com>")
 

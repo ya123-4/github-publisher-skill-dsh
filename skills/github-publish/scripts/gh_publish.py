@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import uuid
 from pathlib import Path
 from urllib.request import Request, build_opener
 
@@ -83,6 +84,20 @@ def _open_status(op, req, timeout=15):
         return exc.code, body
 
 
+def _open_status_retry(op, req, timeout, retries, sleep_s):
+    """_open_status with transient-failure retries (URLError, timeouts).
+    HTTPError is already normalized inside _open_status and not retried here."""
+    last = "unknown"
+    for attempt in range(retries + 1):
+        if attempt:
+            time.sleep(sleep_s)
+        try:
+            return _open_status(op, req, timeout=timeout)
+        except Exception as exc:
+            last = str(exc)
+    raise urllib.error.URLError(f"重试后仍失败：{last}")
+
+
 def create_repo_if_missing(
     opener, token: str, owner: str, name: str, description: str, private: bool,
     retries: int = 2, sleep_s: float = 2.0,
@@ -128,6 +143,12 @@ def create_repo_if_missing(
                 }
             return {"status": "error", "message": f"HTTP 422：{text[:200]}"}
         if status == 403:
+            low = text.lower()
+            if "rate limit" in low or "abuse" in low:
+                return {
+                    "status": "error",
+                    "message": "HTTP 403：触发 GitHub 限流，请稍后重试",
+                }
             return {
                 "status": "error",
                 "message": "HTTP 403：token 权限不足（需要创建仓库的权限）",
@@ -166,10 +187,19 @@ def _parse_args(argv):
     parser.add_argument("--tgz", required=True, help="已打包的 tgz 文件路径")
     parser.add_argument("--repo-name", default=None, help="仓库名（默认 <包名>+后缀）")
     parser.add_argument("--description", default=None, help="仓库描述（默认 package.json description）")
-    parser.add_argument("--private", action="store_true", help="创建私有仓库（默认公开）")
+    parser.add_argument("--private", action="store_true", help="创建私有仓库")
+    parser.add_argument("--public", action="store_true", help="覆盖 config 的 private 默认，创建公开仓库")
     parser.add_argument("--tag", default=None, help="Release tag（默认 v<version>）")
     parser.add_argument("--config", default=None, help="配置文件路径（默认自动探测）")
     return parser.parse_args(argv)
+
+
+def _resolve_private(private_flag: bool, public_flag: bool, visibility: str) -> bool:
+    if private_flag:
+        return True
+    if public_flag:
+        return False
+    return visibility == "private"
 
 
 def _fail(code, stage, message, hint="", token=None, **fields):
@@ -190,13 +220,13 @@ def _api_headers(token: str, content_type: str | None = None) -> dict:
     return h
 
 
-def create_release(opener, token: str, owner: str, repo: str, tag: str, body: str) -> dict:
+def create_release(opener, token: str, owner: str, repo: str, tag: str, body: str, retries: int = 2, sleep_s: float = 2.0) -> dict:
     url = f"{API}/repos/{owner}/{repo}/releases"
     data = json.dumps({"tag_name": tag, "name": tag, "body": body}).encode("utf-8")
     op = opener or build_opener()
     try:
         req = Request(url, data=data, headers=_api_headers(token, "application/json"), method="POST")
-        status, resp_body = _open_status(op, req)
+        status, resp_body = _open_status_retry(op, req, 15, retries, sleep_s)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     text = resp_body.decode("utf-8", "replace")
@@ -233,7 +263,7 @@ def _list_release_assets(opener, token: str, owner: str, repo: str, release_id: 
         return [{"__error": "assets 响应解析失败"}]
 
 
-def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz_path: Path) -> dict:
+def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz_path: Path, retries: int = 2, sleep_s: float = 2.0) -> dict:
     p = Path(tgz_path)
     local_size = p.stat().st_size
     url = (
@@ -244,7 +274,7 @@ def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz
     try:
         data = p.read_bytes()
         req = Request(url, data=data, headers=_api_headers(token, "application/octet-stream"), method="POST")
-        status, resp_body = _open_status(op, req, timeout=120)
+        status, resp_body = _open_status_retry(op, req, 120, retries, sleep_s)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     text = resp_body.decode("utf-8", "replace")
@@ -262,6 +292,11 @@ def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz
         assets = _list_release_assets(op, token, owner, repo, release_id)
         local_digest = hashlib.sha256(data).hexdigest()
         for a in assets:
+            if "__error" in a:
+                return {
+                    "status": "error",
+                    "message": f"查询资产列表失败：{a['__error']}",
+                }
             if a.get("name") == p.name:
                 digest = a.get("digest", "")
                 if digest:
@@ -285,12 +320,12 @@ def upload_asset(opener, token: str, owner: str, repo: str, release_id: int, tgz
     return {"status": "error", "message": f"HTTP {status}：{text[:200]}"}
 
 
-def verify_release(opener, token: str, owner: str, repo: str, tag: str) -> dict:
+def verify_release(opener, token: str, owner: str, repo: str, tag: str, retries: int = 2, sleep_s: float = 2.0) -> dict:
     url = f"{API}/repos/{owner}/{repo}/releases/tags/{tag}"
     op = opener or build_opener()
     try:
         req = Request(url, headers=_api_headers(token))
-        status, resp_body = _open_status(op, req)
+        status, resp_body = _open_status_retry(op, req, 15, retries, sleep_s)
     except Exception as exc:
         return {"status": "error", "message": f"网络错误：{gh_config.mask_token(str(exc), token)}"}
     if status != 200:
@@ -304,7 +339,12 @@ def verify_release(opener, token: str, owner: str, repo: str, tag: str) -> dict:
         "tag": tag,
         "html_url": info.get("html_url", ""),
         "assets": [
-            {"name": a.get("name"), "size": a.get("size"), "browser_download_url": a.get("browser_download_url", "")}
+            {
+                "name": a.get("name"),
+                "size": a.get("size"),
+                "digest": a.get("digest", ""),
+                "browser_download_url": a.get("browser_download_url", ""),
+            }
             for a in info.get("assets", [])
         ],
     }
@@ -335,6 +375,9 @@ __pycache__/
 # local git publishing state (never commit the token)
 *config.json
 .env
+
+# transient CA bundles for secure git pushes
+.github-publisher-ca-*.pem
 
 # superpowers sdd workspace
 .superpowers/
@@ -389,7 +432,7 @@ def _git_secure_args(ca_path: str, basic: str):
 
 def write_ca_tempfile(ca_pem: str, base_dir: Path | None = None) -> Path:
     base = Path(base_dir) if base_dir else Path.cwd()
-    p = base / f".github-publisher-ca-{os.getpid()}.pem"
+    p = base / f".github-publisher-ca-{os.getpid()}-{uuid.uuid4().hex[:6]}.pem"
     p.write_text(ca_pem, encoding="utf-8")
     return p
 
@@ -514,7 +557,8 @@ def _render_readme_en(pkg: dict, name: str) -> str:
         f"# {name}\n\n{desc}\n\n"
         f"DeepSeek Harness skill plugin, version {version}.\n\n"
         "## Install\n\n"
-        f"`npm install <this package>` (tgz: `{name}-{version}.tgz`).\n\n"
+        f"Download the `{name}-{version}.tgz` asset from the latest Release "
+        "and add it as a `file:` dependency in your DSH profile.\n\n"
         "Published automatically by [github-publisher-skill-dsh]"
         "(https://github.com/ya123-4/github-publisher-skill-dsh).\n"
     )
@@ -527,7 +571,8 @@ def _render_readme_zh(pkg: dict, name: str) -> str:
         f"# {name}\n\n{desc}\n\n"
         f"DeepSeek Harness 技能插件，版本 {version}。\n\n"
         "## 安装\n\n"
-        f"`npm install <本包>`（tgz 资产：`{name}-{version}.tgz`）。\n\n"
+        f"从最新 Release 下载 `{name}-{version}.tgz` 资产，在 DSH profile 中"
+        "以 `file:` 依赖安装。\n\n"
         "由 [github-publisher-skill-dsh]"
         "(https://github.com/ya123-4/github-publisher-skill-dsh) 自动入库发布。\n"
     )
@@ -603,7 +648,11 @@ def _main(
     suffix = cfg.get("defaults", {}).get("repo_suffix", "-dsh")
     name = args.repo_name or _default_repo_name(pkg.get("name", ""), suffix)
     description = args.description or pkg.get("description", "")
-    private = args.private or cfg.get("defaults", {}).get("visibility") == "private"
+    private = _resolve_private(
+        args.private,
+        args.public,
+        cfg.get("defaults", {}).get("visibility", "public"),
+    )
     repo = create_repo_if_missing(
         opener, token, owner, name, description, private, sleep_s=sleep_s
     )
@@ -630,7 +679,8 @@ def _main(
     except RuntimeError as exc:
         return _fail(EXIT_COMMIT, "commit", str(exc), token=token)
 
-    # Stage 3: secure push
+    # Stage 3: secure push (one automatic retry for the repo-just-created
+    # readiness race: GitHub may not accept a push immediately after 201)
     ca_pem = ca_bundle if ca_bundle is not None else gh_check.fetch_peer_ca_bundle()
     repo_url = f"https://github.com/{owner}/{name}.git"
     code, detail = push_main(
@@ -641,6 +691,16 @@ def _main(
         ca_pem,
         run_git_capture=run_git,
     )
+    if code != 0:
+        time.sleep(sleep_s)
+        code, detail = push_main(
+            Path(args.dir),
+            repo_url,
+            token,
+            owner,
+            ca_pem,
+            run_git_capture=run_git,
+        )
     if code != 0:
         return _fail(
             EXIT_PUSH,
@@ -663,10 +723,29 @@ def _main(
     if up["status"] == "error":
         return _fail(EXIT_ASSET, "asset", up["message"], token=token)
 
-    # Stage 6: verification + report
+    # Stage 6: verification + report (cross-check asset identity: name +
+    # sha256 digest when GitHub reports one, size otherwise)
     ver = verify_release(opener, token, owner, name, tag)
     if ver.get("status") != "ok":
         return _fail(EXIT_RELEASE, "verify", ver.get("message", "验证失败"), token=token)
+    local_size = tgz.stat().st_size
+    local_digest = hashlib.sha256(tgz.read_bytes()).hexdigest()
+    matched = False
+    for a in ver.get("assets", []):
+        if a.get("name") != tgz.name:
+            continue
+        if a.get("digest"):
+            matched = a["digest"].endswith(local_digest)
+        else:
+            matched = a.get("size") == local_size
+        break
+    if not matched:
+        return _fail(
+            EXIT_ASSET,
+            "verify",
+            f"验证失败：Release 资产与本地 tgz 不一致（本地 {local_size} 字节）",
+            token=token,
+        )
     print(
         emit_result(
             True,
@@ -677,6 +756,7 @@ def _main(
             asset_url=up.get("browser_download_url", ""),
             asset_status=up["status"],
             tag=tag,
+            config_path=env["actual_config_path"],
         )
     )
     return EXIT_OK

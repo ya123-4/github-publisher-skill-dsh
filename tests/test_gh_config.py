@@ -91,6 +91,24 @@ class ConfigTests(unittest.TestCase):
         got = gh_config.resolve_config_path(workspace=str(deep), home=str(home))
         self.assertEqual(got, cfg)
 
+    def test_resolve_skips_unreadable_existing_candidate(self):
+        from unittest import mock
+
+        td = make_tempdir()
+        home = Path(td) / "home"
+        ws = Path(td) / "ws"
+        home_cfg = home / ".dsh" / "github-publisher" / "config.json"
+        home_cfg.parent.mkdir(parents=True)
+        home_cfg.write_text("{}", encoding="utf-8")
+        ws_cfg = ws / "ws-rt" / "github-publisher-config.json"
+        ws_cfg.parent.mkdir(parents=True)
+        ws_cfg.write_text("{}", encoding="utf-8")
+        with mock.patch(
+            "gh_config._readable", side_effect=lambda p: p != home_cfg
+        ):
+            got = gh_config.resolve_config_path(workspace=str(ws), home=str(home), walk_up=False)
+        self.assertEqual(got, ws_cfg)
+
     def test_cli_init_writes_config_from_stdin(self):
         td = make_tempdir()
         home = Path(td) / "home"

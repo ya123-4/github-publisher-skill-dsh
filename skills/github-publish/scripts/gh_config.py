@@ -42,12 +42,35 @@ def _candidates(workspace, home):
     return candidates
 
 
+def _readable(path) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8"):
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def resolve_config_path(workspace=None, home=None, walk_up=True) -> Path:
-    """First existing candidate wins; if none exists, default to the home one."""
-    candidates = _candidates(workspace, home) if walk_up else _candidates(workspace, home)[:1] + [Path(workspace or Path.cwd()) / WS_CANDIDATE_SUFFIX]
+    """First existing AND readable candidate wins (scripts only read the
+    config; writability matters only when init writes it and save_config's
+    fallback handles that). Falls back to the first existing candidate,
+    then to the home default when nothing exists."""
+    if walk_up:
+        candidates = _candidates(workspace, home)
+    else:
+        candidates = _candidates(workspace, home)[:1] + [
+            Path(workspace or Path.cwd()) / WS_CANDIDATE_SUFFIX
+        ]
+    first_existing = None
     for c in candidates:
         if c.exists():
-            return c
+            if first_existing is None:
+                first_existing = c
+            if _readable(c):
+                return c
+    if first_existing is not None:
+        return first_existing
     return candidates[0]
 
 

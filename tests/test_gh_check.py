@@ -47,6 +47,21 @@ class CheckTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("401", msg)
 
+    def test_validate_token_retries_transient(self):
+        import urllib.error
+
+        opener = FakeOpener(
+            [
+                urllib.error.URLError("timeout"),
+                json_response(200, {"login": "ya123-4"}),
+            ]
+        )
+        ok, msg = gh_check.validate_token(
+            "ghp_x", "ya123-4", opener=opener, retries=1, sleep_s=0
+        )
+        self.assertTrue(ok)
+        self.assertEqual(len(opener.requests), 2)
+
     def test_check_environment_with_fake_opener(self):
         td = make_tempdir()
         cfg = Path(td) / "config.json"
@@ -104,6 +119,7 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(code, 2)
         payload = json.loads(buf.getvalue())
         self.assertFalse(payload["ok"])
+        self.assertIn("hint", payload)
 
     def test_cli_ok_with_fakes(self):
         td = make_tempdir()

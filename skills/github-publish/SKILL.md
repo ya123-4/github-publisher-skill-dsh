@@ -52,14 +52,15 @@ python <skills>/github-publish/scripts/gh_publish.py --dir <插件源码目录> 
 |---|---|
 | `--repo-name` | `package.json` 的 name 加 `defaults.repo_suffix`（`-dsh`，已含后缀则不重复加） |
 | `--description` | `package.json` 的 description |
-| `--private` | 不传 = 公开（`defaults.visibility`） |
+| `--private` / `--public` | 都不传 = `defaults.visibility`；`--private` 强制私有；`--public` 覆盖 config 的 private 默认 |
 | `--tag` | `v<package.json version>` |
-| `--config` | 自动探测：`%USERPROFILE%\.dsh\github-publisher\config.json` → `<workspace>\ws-rt\github-publisher-config.json` |
+| `--config` | 自动探测：`%USERPROFILE%\.dsh\github-publisher\config.json` → 沿 cwd 向上找 `<workspace>\ws-rt\github-publisher-config.json` |
 
 脚本内部流程：自检（tgz 合法性、TLS、token 有效性）→ 幂等建仓（已存在则复用）→
-本地 git init/commit（README 双语 + LICENSE + .gitignore 自动生成）→ 安全推送
-（openssl 后端 + 临时 CA + Authorization 进程级注入，token 不落盘）→ 创建 Release →
-上传 tgz 资产 → GitHub API 回查验证。
+本地 git init/commit（README 双语 + LICENSE + .gitignore 自动生成，已有文件不覆盖）→ 安全推送
+（openssl 后端 + 临时 CA + Authorization 进程级注入，token 不落盘；失败自动重试一次以避开
+GitHub 建仓后就绪竞态）→ 创建 Release → 上传 tgz 资产（同名资产按 sha256 判定是否一致）→
+GitHub API 回查验证（资产名 + sha256/大小与本地 tgz 交叉核对）。
 
 ### 第 3 步：向用户报告
 
@@ -73,13 +74,13 @@ python <skills>/github-publish/scripts/gh_publish.py --dir <插件源码目录> 
 
 | 退出码 | 含义 | AI 的处理 |
 |---|---|---|
-| 0 | 成功 | 报告 URL |
+| 0 | 成功 | 报告 URL（JSON 含 config_path） |
 | 2 | 自检/脚本自身失败（含 `stage=fatal` 的未预期错误） | 按 hint 处理：缺 PAT 就向用户索要一次（stdin 方式写配置）；tgz 缺失就重新 npm pack |
-| 3 | 建仓失败 | 常见：token 权限不足（需 repo 作用域）——指引用户换 PAT |
+| 3 | 建仓失败 | 区分两种 403：限流→稍后重试；权限不足→指引用户换 PAT |
 | 4 | 本地提交失败 | 检查插件目录可写、git 可用 |
-| 5 | 推送失败 | 输出 JSON 的 message 含 git stderr 摘要（pull/push 区分）；按摘要重试一次或报告用户 |
+| 5 | 推送失败 | 输出 JSON 的 message 含 git stderr 摘要（pull/push 区分，已自动重试一次）；仍失败报告用户 |
 | 6 | Release 失败 | 常见：tag 已存在——bump 插件 version 后重发 |
-| 7 | 资产上传失败 | 常见：同名资产内容不同（按 sha256 判定）——报告并请用户决定 |
+| 7 | 资产/验证失败 | 同名资产内容不同（sha256 判定）、或验证阶段资产与本地 tgz 不一致——报告并请用户决定 |
 
 ## 安全铁律（必须遵守）
 
