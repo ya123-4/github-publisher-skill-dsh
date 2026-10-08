@@ -31,12 +31,20 @@ def config_template(owner: str) -> dict:
 def _candidates(workspace, home):
     home = Path(home) if home else Path(os.path.expanduser("~"))
     ws = Path(workspace) if workspace else Path.cwd()
-    return [home / HOME_CANDIDATE_SUFFIX, ws / WS_CANDIDATE_SUFFIX]
+    candidates = [home / HOME_CANDIDATE_SUFFIX]
+    # walk up from the cwd so a config under any ancestor's ws-rt/ is found
+    p = ws
+    seen = set()
+    while p is not None and p not in seen and p != p.parent:
+        seen.add(p)
+        candidates.append(p / WS_CANDIDATE_SUFFIX)
+        p = p.parent
+    return candidates
 
 
-def resolve_config_path(workspace=None, home=None) -> Path:
+def resolve_config_path(workspace=None, home=None, walk_up=True) -> Path:
     """First existing candidate wins; if none exists, default to the home one."""
-    candidates = _candidates(workspace, home)
+    candidates = _candidates(workspace, home) if walk_up else _candidates(workspace, home)[:1] + [Path(workspace or Path.cwd()) / WS_CANDIDATE_SUFFIX]
     for c in candidates:
         if c.exists():
             return c

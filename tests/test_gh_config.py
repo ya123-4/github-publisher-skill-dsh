@@ -77,8 +77,19 @@ class ConfigTests(unittest.TestCase):
         td = make_tempdir()
         home = Path(td) / "home"
         ws = Path(td) / "ws"
-        got = gh_config.resolve_config_path(workspace=str(ws), home=str(home))
+        got = gh_config.resolve_config_path(workspace=str(ws), home=str(home), walk_up=False)
         self.assertEqual(got, home / ".dsh" / "github-publisher" / "config.json")
+
+    def test_resolve_walks_up_to_ws_rt(self):
+        td = make_tempdir()
+        home = Path(td) / "home"
+        ws_root = Path(td) / "ws"
+        cfg = ws_root / "ws-rt" / "github-publisher-config.json"
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("{}", encoding="utf-8")
+        deep = ws_root / "a" / "b" / "c"  # cwd nested 3 levels down
+        got = gh_config.resolve_config_path(workspace=str(deep), home=str(home))
+        self.assertEqual(got, cfg)
 
 
 if __name__ == "__main__":
